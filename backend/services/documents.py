@@ -27,10 +27,12 @@ async def list_documents(tenant_id: str) -> list[DocumentSummary]:
                     LEFT(STRING_AGG(content, ' ' ORDER BY chunk_index, created_at), 180) AS content_preview,
                     MAX(created_at)::text AS updated_at
                 FROM document_chunks
+                WHERE tenant_id = :tenant_id
                 GROUP BY file_name
                 ORDER BY MAX(created_at) DESC, file_name ASC
                 """
-            )
+            ),
+            {"tenant_id": tenant_id},
         )
         return [DocumentSummary(**dict(row._mapping)) for row in result]
 
@@ -42,11 +44,12 @@ async def read_document(tenant_id: str, file_name: str) -> dict[str, Any] | None
                 """
                 SELECT file_name, content, chunk_index, created_at::text AS created_at
                 FROM document_chunks
-                WHERE file_name = :file_name
+                WHERE tenant_id = :tenant_id
+                  AND file_name = :file_name
                 ORDER BY chunk_index, created_at
                 """
             ),
-            {"file_name": file_name},
+            {"tenant_id": tenant_id, "file_name": file_name},
         )
         rows = [dict(row._mapping) for row in result]
 
@@ -66,7 +69,10 @@ async def replace_document(tenant_id: str, file_name: str, content: str, setting
     embeddings = await embed_texts(settings, chunks)
 
     async with tenant_transaction(tenant_id) as transaction:
-        await transaction.execute(text("DELETE FROM document_chunks WHERE file_name = :file_name"), {"file_name": file_name})
+        await transaction.execute(
+            text("DELETE FROM document_chunks WHERE tenant_id = :tenant_id AND file_name = :file_name"),
+            {"tenant_id": tenant_id, "file_name": file_name},
+        )
         for chunk_index, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
             await transaction.execute(
                 text(
@@ -90,7 +96,7 @@ async def replace_document(tenant_id: str, file_name: str, content: str, setting
 async def delete_document(tenant_id: str, file_name: str) -> int:
     async with tenant_transaction(tenant_id) as transaction:
         result = await transaction.execute(
-            text("DELETE FROM document_chunks WHERE file_name = :file_name"),
-            {"file_name": file_name},
+            text("DELETE FROM document_chunks WHERE tenant_id = :tenant_id AND file_name = :file_name"),
+            {"tenant_id": tenant_id, "file_name": file_name},
         )
         return int(result.rowcount or 0)

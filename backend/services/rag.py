@@ -45,11 +45,12 @@ async def _retrieve_chunks(
                 """
                 SELECT id::text, file_name, content, embedding <=> CAST(:embedding AS vector) AS distance
                 FROM document_chunks
+                WHERE tenant_id = :tenant_id
                 ORDER BY embedding <=> CAST(:embedding AS vector)
                 LIMIT 3
                 """
             ),
-            {"embedding": query_vector},
+            {"tenant_id": tenant_id, "embedding": query_vector},
         )
         chunks = [dict(row._mapping) for row in result]
     return chunks, _elapsed_ms(start)
