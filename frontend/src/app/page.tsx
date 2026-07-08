@@ -52,7 +52,7 @@ const tenants: Tenant[] = [
   { id: "tenant-health-inc", label: "Tenant B (Health Inc)" },
 ];
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 const defaultTelemetry: Telemetry = {
   latency_ms: 0,
   cache_status: "BYPASS",
@@ -75,6 +75,14 @@ function createWorkspace(tenant: Tenant): TenantWorkspace {
     telemetry: defaultTelemetry,
     logs: [],
   };
+}
+
+async function readApiResponse(response: Response) {
+  const payload = await response.json().catch(() => ({ detail: "API returned an unreadable response." }));
+  if (!response.ok) {
+    throw new Error(typeof payload.detail === "string" ? payload.detail : `API request failed with ${response.status}`);
+  }
+  return payload;
 }
 
 export default function Home() {
@@ -127,33 +135,41 @@ export default function Home() {
   }
 
   async function fetchDocuments(targetTenantId: string) {
-    const response = await fetch(`${apiBase}/api/documents`, {
-      headers: { "X-Tenant-ID": targetTenantId },
-    });
-    const payload = await response.json();
-    const nextDocuments = (payload.documents ?? []) as DocumentSummary[];
-    updateWorkspace(targetTenantId, (current) => {
-      const selectedStillExists = nextDocuments.some((item) => item.file_name === current.selectedFileName);
-      return {
-        ...current,
-        documents: nextDocuments,
-        documentsLoaded: true,
-        selectedFileName: selectedStillExists ? current.selectedFileName : "",
-        editContent: selectedStillExists ? current.editContent : "",
-      };
-    });
+    try {
+      const response = await fetch(`${apiBase}/api/documents`, {
+        headers: { "X-Tenant-ID": targetTenantId },
+      });
+      const payload = await readApiResponse(response);
+      const nextDocuments = (payload.documents ?? []) as DocumentSummary[];
+      updateWorkspace(targetTenantId, (current) => {
+        const selectedStillExists = nextDocuments.some((item) => item.file_name === current.selectedFileName);
+        return {
+          ...current,
+          documents: nextDocuments,
+          documentsLoaded: true,
+          selectedFileName: selectedStillExists ? current.selectedFileName : "",
+          editContent: selectedStillExists ? current.editContent : "",
+        };
+      });
+    } catch (error) {
+      pushLogs(targetTenantId, [{ event: "documents.load_failed", detail: error instanceof Error ? error.message : String(error) }]);
+    }
   }
 
   async function openDocument(targetTenantId: string, targetFileName: string) {
-    const response = await fetch(`${apiBase}/api/documents/${encodeURIComponent(targetFileName)}`, {
-      headers: { "X-Tenant-ID": targetTenantId },
-    });
-    const payload = await response.json();
-    updateWorkspace(targetTenantId, (current) => ({
-      ...current,
-      selectedFileName: targetFileName,
-      editContent: payload.document?.content ?? "",
-    }));
+    try {
+      const response = await fetch(`${apiBase}/api/documents/${encodeURIComponent(targetFileName)}`, {
+        headers: { "X-Tenant-ID": targetTenantId },
+      });
+      const payload = await readApiResponse(response);
+      updateWorkspace(targetTenantId, (current) => ({
+        ...current,
+        selectedFileName: targetFileName,
+        editContent: payload.document?.content ?? "",
+      }));
+    } catch (error) {
+      pushLogs(targetTenantId, [{ event: "document.open_failed", detail: error instanceof Error ? error.message : String(error) }]);
+    }
   }
 
   async function saveDocument() {
@@ -166,10 +182,12 @@ export default function Home() {
         headers: { "Content-Type": "application/json", "X-Tenant-ID": activeTenantId },
         body: JSON.stringify({ content: editContent }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       pushLogs(activeTenantId, [{ event: "document.updated", ...payload }]);
       await fetchDocuments(activeTenantId);
       await openDocument(activeTenantId, selectedFileName);
+    } catch (error) {
+      pushLogs(activeTenantId, [{ event: "document.update_failed", detail: error instanceof Error ? error.message : String(error) }]);
     } finally {
       setBusy(false);
     }
@@ -185,10 +203,12 @@ export default function Home() {
         method: "DELETE",
         headers: { "X-Tenant-ID": activeTenantId },
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       pushLogs(activeTenantId, [{ event: "document.deleted", ...payload }]);
       updateWorkspace(activeTenantId, (current) => ({ ...current, selectedFileName: "", editContent: "" }));
       await fetchDocuments(activeTenantId);
+    } catch (error) {
+      pushLogs(activeTenantId, [{ event: "document.delete_failed", detail: error instanceof Error ? error.message : String(error) }]);
     } finally {
       setBusy(false);
     }
@@ -211,7 +231,7 @@ export default function Home() {
           content: activeIngestText,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       updateWorkspace(activeTenant.id, (current) => ({
         ...current,
         ingestText: "",
@@ -221,6 +241,8 @@ export default function Home() {
       if (workspace.documentsLoaded) {
         await fetchDocuments(activeTenant.id);
       }
+    } catch (error) {
+      pushLogs(activeTenant.id, [{ event: "ingest.failed", detail: error instanceof Error ? error.message : String(error) }]);
     } finally {
       setBusy(false);
     }
@@ -243,13 +265,22 @@ export default function Home() {
         headers: { "Content-Type": "application/json", "X-Tenant-ID": activeTenant.id },
         body: JSON.stringify({ query: activeQuery, user_id: "dashboard-user" }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       updateWorkspace(activeTenant.id, (current) => ({
         ...current,
         telemetry: payload.telemetry ?? current.telemetry,
         messages: [...current.messages, { role: "assistant", content: payload.answer ?? "No answer returned." }],
       }));
       pushLogs(activeTenant.id, payload.logs ?? [{ event: "query.failed", payload }]);
+    } catch (error) {
+      updateWorkspace(activeTenant.id, (current) => ({
+        ...current,
+        messages: [
+          ...current.messages,
+          { role: "assistant", content: error instanceof Error ? error.message : "Query failed." },
+        ],
+      }));
+      pushLogs(activeTenant.id, [{ event: "query.failed", detail: error instanceof Error ? error.message : String(error) }]);
     } finally {
       setBusy(false);
     }

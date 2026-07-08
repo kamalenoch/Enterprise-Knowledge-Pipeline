@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Enterprise Knowledge Pipeline"
     environment: Literal["local", "test", "production"] = "local"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"])
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/knowledge_pipeline"
     database_pool_size: int = 8
